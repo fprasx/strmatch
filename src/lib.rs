@@ -1,6 +1,6 @@
 use std::vec;
 
-use proc_macro_error::{emit_error, proc_macro_error, abort};
+use proc_macro_error::{emit_error, proc_macro_error};
 use quote::TokenStreamExt;
 use quote::{quote, ToTokens};
 use syn::parse_macro_input;
@@ -12,6 +12,10 @@ use syn::{
 #[proc_macro]
 #[proc_macro_error]
 pub fn strmatch(tokens: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    if tokens.is_empty() {
+        return quote!([]).into();
+    }
+
     let macro_input = parse_macro_input!(tokens as MacroInput);
     let remainder = macro_input.remainder;
     let literals = macro_input.literals;
@@ -21,7 +25,7 @@ pub fn strmatch(tokens: proc_macro::TokenStream) -> proc_macro::TokenStream {
 }
 
 struct MacroInput {
-    literals: Vec<Literal>,
+    literals: Vec<Capture>,
     remainder: Ident,
 }
 
@@ -29,12 +33,19 @@ impl Parse for MacroInput {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut literals = vec![];
         // Try to parse a literal
-        while let Ok(lit) = input.parse::<Literal>() {
+        while let Ok(lit) = input.parse::<Capture>() {
             literals.push(lit);
-            // Make sure there is a : token following it
+            // Check if there is a : token following it
             match input.parse::<Token![:]>() {
+                // If there is continue
                 Ok(_) => continue,
-                Err(e) => return Err(e),
+                // Otherwise, make sure there is no more input
+                Err(e) => {
+                    if input.is_empty() {
+                        // TODO: implement this once MacroInput is rejiggered.
+                    }
+                    return Err(e);
+                }
             }
         }
         let remainder = match input.parse::<Ident>() {
@@ -48,7 +59,7 @@ impl Parse for MacroInput {
     }
 }
 
-enum Literal {
+enum Capture {
     ByteStr { lit: LitByteStr, reps: usize },
     Byte { lit: LitByte, reps: usize },
     Str { lit: LitStr, reps: usize },
@@ -69,9 +80,9 @@ fn process_suffix(suffix: &str) -> Result<usize, String> {
     }
 }
 
-impl Parse for Literal {
+impl Parse for Capture {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        use Literal::*;
+        use Capture::*;
 
         // Make sure not the join the fork to the input before emitting an
         // error as this will make the error point to the next syntax node.
@@ -136,30 +147,33 @@ impl Parse for Literal {
     }
 }
 
-impl ToTokens for Literal {
+impl ToTokens for Capture {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         match self {
-            Literal::ByteStr { lit, reps } => {
+            Capture::ByteStr { lit, reps } => {
                 for _ in 0..*reps {
                     let bytes = lit.value();
                     tokens.append_terminated(bytes.iter(), quote!(,))
                 }
             }
-            Literal::Byte { lit, reps } => {
+            Capture::Byte { lit, reps } => {
                 for _ in 0..*reps {
                     let byte = lit.value();
                     tokens.append_all(quote!(#byte,))
                 }
             }
-            Literal::Str { lit, reps } => {
+            Capture::Str { lit, reps } => {
                 for _ in 0..*reps {
                     let string = lit.value();
-                    tokens.append_terminated(string.chars(), quote!(,))
+                    // We want to display in byte literal form
+                    let chars = string.as_bytes();
+                    tokens.append_terminated(chars, quote!(,))
                 }
             }
-            Literal::Char { lit, reps } => {
+            Capture::Char { lit, reps } => {
                 for _ in 0..*reps {
-                    let char = lit.value();
+                    // Display as a byte literal
+                    let char = lit.value() as u8;
                     tokens.append_all(quote!(#char,))
                 }
             }
