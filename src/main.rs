@@ -6,19 +6,33 @@ use strmatch::strmatch as s;
 fn main() {
     let str = "one two two three three three";
     match str.as_bytes() {
-        s!("one ":"two "x2:"three "x2:rest) => {
+        s!("one " "two "x2 "three "x2 [rest]) => {
             let str = String::from_utf8(rest.to_vec()).unwrap();
             assert_eq!(&str, "three")
         }
         s!() => println!(),
-        [_a @ _] => println!("yay"),
         _ => println!("hmm"),
+    }
+    match "hallop".as_bytes() {
+        s!() => {}
+        s!("h" "a" [llop]) => {
+            assert_eq!(llop, b"llop")
+        }
+        s!(_) => {}
+        s!(_ _ [_]) => {}
+        s!("hallo") => {}
+        s!("hallo" f) => {
+            println!("{f:?}");
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use strmatch::strmatch;
+
+    #[test]
+    fn syntax() {}
 
     #[test]
     fn empty() {
@@ -48,7 +62,7 @@ mod bench {
         b.iter(|| {
             black_box(matches!(
                 black_box("helloworld").as_bytes(),
-                strmatch!("hello": _rest)
+                strmatch!("hello" ajfd)
             ))
         })
     }

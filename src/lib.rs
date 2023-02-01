@@ -1,13 +1,10 @@
 use std::vec;
 
-use proc_macro_error::{emit_error, proc_macro_error};
+use proc_macro_error::{abort, proc_macro_error};
 use quote::TokenStreamExt;
 use quote::{quote, ToTokens};
-use syn::parse_macro_input;
-use syn::{
-    parse::discouraged::Speculative, parse::Parse, Ident, LitByte, LitByteStr, LitChar, LitStr,
-    Token,
-};
+use syn::{bracketed, parse_macro_input};
+use syn::{parse::Parse, Ident, LitByte, LitByteStr, LitChar, LitStr, Token};
 
 #[proc_macro]
 #[proc_macro_error]
@@ -17,16 +14,18 @@ pub fn strmatch(tokens: proc_macro::TokenStream) -> proc_macro::TokenStream {
     }
 
     let macro_input = parse_macro_input!(tokens as MacroInput);
-    let remainder = macro_input.remainder;
+    let end = macro_input.end;
     let literals = macro_input.literals;
-    // Note: all literals get trailing commas in their ToToken's impls, so we
-    // don't need one here
-    quote!([#(#literals)* #remainder @ ..]).into()
+    if let Some(end) = end {
+        quote!([#(#literals)* #end]).into()
+    } else {
+        quote!([#(#literals)*]).into()
+    }
 }
 
 struct MacroInput {
     literals: Vec<Capture>,
-    remainder: Ident,
+    end: Option<EndCapture>,
 }
 
 impl Parse for MacroInput {
@@ -35,27 +34,48 @@ impl Parse for MacroInput {
         // Try to parse a literal
         while let Ok(lit) = input.parse::<Capture>() {
             literals.push(lit);
-            // Check if there is a : token following it
-            match input.parse::<Token![:]>() {
-                // If there is continue
-                Ok(_) => continue,
-                // Otherwise, make sure there is no more input
-                Err(e) => {
-                    if input.is_empty() {
-                        // TODO: implement this once MacroInput is rejiggered.
-                    }
-                    return Err(e);
-                }
-            }
         }
-        let remainder = match input.parse::<Ident>() {
-            Ok(rem) => rem,
-            Err(e) => return Err(e),
-        };
-        Ok(MacroInput {
-            literals,
-            remainder,
-        })
+        if input.is_empty() {
+            return Ok(MacroInput {
+                literals,
+                end: None,
+            });
+        }
+        let inner;
+        let _ = bracketed!(inner in input);
+        match inner.parse::<EndCapture>() {
+            Err(e) => Err(e),
+            Ok(end) => Ok(MacroInput {
+                literals,
+                end: Some(end),
+            }),
+        }
+    }
+}
+enum EndCapture {
+    Ident(Ident),
+    Underscore,
+}
+
+impl Parse for EndCapture {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let lookahead = input.lookahead1();
+        if lookahead.peek(Token![_]) {
+            input.parse::<Token![_]>().map(|_| EndCapture::Underscore)
+        } else if lookahead.peek(Ident) {
+            input.parse::<Ident>().map(EndCapture::Ident)
+        } else {
+            Err(lookahead.error())
+        }
+    }
+}
+
+impl ToTokens for EndCapture {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        match self {
+            EndCapture::Ident(ident) => tokens.append_all(quote!(#ident @ ..,)),
+            EndCapture::Underscore => tokens.append_all(quote!(..,)),
+        }
     }
 }
 
@@ -64,6 +84,8 @@ enum Capture {
     Byte { lit: LitByte, reps: usize },
     Str { lit: LitStr, reps: usize },
     Char { lit: LitChar, reps: usize },
+    Ident(Ident),
+    Underscore,
 }
 
 fn process_suffix(suffix: &str) -> Result<usize, String> {
@@ -82,68 +104,58 @@ fn process_suffix(suffix: &str) -> Result<usize, String> {
 
 impl Parse for Capture {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        use Capture::*;
-
-        // Make sure not the join the fork to the input before emitting an
-        // error as this will make the error point to the next syntax node.
-
-        // Attempt to parse into a byte string literal
-        let fork = input.fork();
-        if let Ok(lit) = fork.parse::<LitByteStr>() {
-            match process_suffix(lit.suffix()) {
-                Ok(reps) => {
-                    input.advance_to(&fork);
-                    return Ok(ByteStr { lit, reps });
+        let lookahead = input.lookahead1();
+        if lookahead.peek(Ident) {
+            input.parse().map(Capture::Ident)
+        } else if lookahead.peek(Token![_]) {
+            input.parse::<Token![_]>().map(|_| Capture::Underscore)
+        } else if lookahead.peek(LitByte) {
+            match input.parse::<LitByte>() {
+                Ok(lit) => {
+                    let reps = match process_suffix(lit.suffix()) {
+                        Ok(reps) => reps,
+                        Err(e) => abort!(lit.span(), e),
+                    };
+                    return Ok(Capture::Byte { lit, reps });
                 }
-                Err(err) => {
-                    emit_error!(input.span(), err)
-                }
+                Err(_) => unreachable!(), // we checked with lookahead
             }
-        }
-
-        // Attempt to parse into a string literal
-        let fork = input.fork();
-        if let Ok(lit) = fork.parse::<LitStr>() {
-            match process_suffix(lit.suffix()) {
-                Ok(reps) => {
-                    input.advance_to(&fork);
-                    return Ok(Str { lit, reps });
+        } else if lookahead.peek(LitByteStr) {
+            match input.parse::<LitByteStr>() {
+                Ok(lit) => {
+                    let reps = match process_suffix(lit.suffix()) {
+                        Ok(reps) => reps,
+                        Err(e) => abort!(lit.span(), e),
+                    };
+                    return Ok(Capture::ByteStr { lit, reps });
                 }
-                Err(err) => {
-                    emit_error!(input.span(), err)
-                }
+                Err(_) => unreachable!(), // we checked with lookahead
             }
-        }
-
-        // Attempt to parse into a byte literal
-        let fork = input.fork();
-        if let Ok(lit) = fork.parse::<LitByte>() {
-            match process_suffix(lit.suffix()) {
-                Ok(reps) => {
-                    input.advance_to(&fork);
-                    return Ok(Byte { lit, reps });
+        } else if lookahead.peek(LitChar) {
+            match input.parse::<LitChar>() {
+                Ok(lit) => {
+                    let reps = match process_suffix(lit.suffix()) {
+                        Ok(reps) => reps,
+                        Err(e) => abort!(lit.span(), e),
+                    };
+                    return Ok(Capture::Char { lit, reps });
                 }
-                Err(err) => {
-                    emit_error!(input.span(), err)
-                }
+                Err(_) => unreachable!(), // we checked with lookahead
             }
-        }
-
-        // Attempt to parse into a char
-        let fork = input.fork();
-        if let Ok(lit) = fork.parse::<LitChar>() {
-            match process_suffix(lit.suffix()) {
-                Ok(reps) => {
-                    input.advance_to(&fork);
-                    return Ok(Char { lit, reps });
+        } else if lookahead.peek(LitStr) {
+            match input.parse::<LitStr>() {
+                Ok(lit) => {
+                    let reps = match process_suffix(lit.suffix()) {
+                        Ok(reps) => reps,
+                        Err(e) => abort!(lit.span(), e),
+                    };
+                    return Ok(Capture::Str { lit, reps });
                 }
-                Err(err) => {
-                    emit_error!(input.span(), err)
-                }
+                Err(_) => unreachable!(), // we checked with lookahead
             }
+        } else {
+            Err(lookahead.error())
         }
-        // None of the parsers succeeded
-        Err(syn::Error::new(input.span(), "failed to parse input as byte string literal, string literal, byte literal, or character"))
     }
 }
 
@@ -177,6 +189,8 @@ impl ToTokens for Capture {
                     tokens.append_all(quote!(#char,))
                 }
             }
+            Capture::Ident(ident) => tokens.append_all(quote!(#ident,)),
+            Capture::Underscore => tokens.append_all(quote!(_,)),
         }
     }
 }
