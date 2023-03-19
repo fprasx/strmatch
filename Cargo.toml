@@ -1,8 +1,15 @@
 [package]
 name = "strmatch"
 authors = ["Felix Prasanna <fpx@mit.edu>"]
+license = "MIT OR Apache-2.0"
+description = "Baby compile-time regex's"
+documentation = "docs.rs/strmatch"
+categories = ["text-processing", "parsing"]
+keywords = ["matching", "patterns", "macro"]
 version = "0.1.0"
 edition = "2021"
+readme = "README.ms"
+repository = "https://github.com/fprasx/strmatch"
 
 [lib]
 proc-macro = true
