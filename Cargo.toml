@@ -8,7 +8,7 @@ categories = ["text-processing", "parsing"]
 keywords = ["matching", "patterns", "macro"]
 version = "0.1.0"
 edition = "2021"
-readme = "README.ms"
+readme = "README.md"
 repository = "https://github.com/fprasx/strmatch"
 
 [lib]
