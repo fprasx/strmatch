@@ -1,5 +1,6 @@
 [package]
 name = "strmatch"
+authors = ["Felix Prasanna <fpx@mit.edu>"]
 version = "0.1.0"
 edition = "2021"
 

@@ -6,6 +6,53 @@ use quote::{quote, ToTokens};
 use syn::{bracketed, parse_macro_input};
 use syn::{parse::Parse, Ident, LitByte, LitByteStr, LitChar, LitStr, Token};
 
+/// `strmatch!` makes validating and extracting parts of
+/// strings easier. It works by converting your query into a slice pattern,
+/// hopefully allowing to optimizer to take a stab at your queries.
+///
+/// # Usage:
+///
+/// ```rust
+/// // Convert to bytes so we can use slice pattern matching.
+/// let str = "one twotwo threethreethree";
+///
+/// // This `as_bytes` call is completely free!
+/// // It's just a transmute under the hood.
+/// match str.as_bytes() {
+///     // We can start off by matching an empty string
+///     strmatch!() => {}
+///
+///     // Ignore one character ...
+///     strmatch!(_) => {}
+///
+///     // Or take it!
+///     strmatch!(mine_now) => {}
+///
+///     // Match a literal ...
+///     strmatch!('x') => {}
+///     strmatch!("xyz") => {}
+///
+///     // And match repeats!
+///     strmatch!("one" _ "two"x2  _ "three"x3) => {}
+///
+///     // Bracketed patterns can be the last term of a pattern.
+///     // Ignore everything past "one"
+///     strmatch!("one" [_]) => {}
+///
+///     // Or give it a name :)
+///     strmatch!("one" _ [hellooo]) => {
+///         assert_eq!(hellooo, b"twotwo threethreethree");
+///     }
+///
+///     // We can combine patterns however we want!
+///     strmatch!("one" ' ' "two"x2 space "three"x2 [rest]) => {
+///         assert_eq!(space, &b' ');
+///         assert_eq!(rest, b"three");
+///     }
+///
+///     _ => println!("Macros are fun :p"),
+/// }
+/// ```
 #[proc_macro]
 #[proc_macro_error]
 pub fn strmatch(tokens: proc_macro::TokenStream) -> proc_macro::TokenStream {
@@ -52,6 +99,9 @@ impl Parse for MacroInput {
         }
     }
 }
+
+/// `EndCapture` is meant to represent the last capture that grabs all
+/// remaining characters, as in [, , , end_capture @ ..] or [, , , _]
 enum EndCapture {
     Ident(Ident),
     Underscore,
@@ -79,6 +129,16 @@ impl ToTokens for EndCapture {
     }
 }
 
+/// Any capture that does grab and arbitrary number of tokens.
+/// Each of the string-style captures can also have a number of repetitions
+/// provided that dictates how many times the proc-macro includes them.
+/// These are possible captures of each type
+/// `ByteStr`:    b"abc"x2 --expands to-> [b'a', b'b', b'c', b'a', b'b', b'c',]
+/// `Byte`:       b'b'x2   --expands to-> [b'b', b'b',]
+/// `Str`:        "abc!"x2 --expands to-> [b'a', b'b', b'c', b'a', b'b', b'c',]
+/// `Char`:       'c'x2    --expands to-> ['c', 'c',]
+/// `Ident`:      abc      --expands to-> [abc @ _,]
+/// `Underscore`: _        --expands to-> [_,]
 enum Capture {
     ByteStr { lit: LitByteStr, reps: usize },
     Byte { lit: LitByte, reps: usize },
@@ -88,6 +148,7 @@ enum Capture {
     Underscore,
 }
 
+// Return the number of repetitionss from a suffix
 fn process_suffix(suffix: &str) -> Result<usize, String> {
     if suffix.is_empty() {
         return Ok(1);
